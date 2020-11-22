@@ -2,7 +2,7 @@
 chip8-rust is an implementation of the [CHIP-8 virtual machine](https://en.wikipedia.org/wiki/CHIP-8).
 
 ## Installation
-As this was intended as a learning project, there is no official crate/lib available, so you'll need to compile from source.
+As this was intended as a learning project, there is no official crate/lib available, so you'll need to compile from source [or use a tagged release binary](https://github.com/gavrielrh/chip8-rust/tags).
 
 ```bash
 git clone git@github.com:gavrielrh/chip8-rust.git
@@ -13,7 +13,7 @@ cargo build
 ## Usage
 
 ```bash
-./chip8-rust <path-to-chip8-program>
+./chip8 <path-to-chip8-program>
 ```
 
 The keypad for *chip8-rust* maps the following keys:
