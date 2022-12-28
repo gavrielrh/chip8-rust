@@ -2,7 +2,7 @@ extern crate sdl2;
 
 use rand::prelude::*;
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::Scancode;
 use sdl2::pixels::Color;
 use sdl2::rect::Point;
 use std::env;
@@ -31,6 +31,13 @@ const FONT_SET: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
+#[derive(PartialEq, Eq)]
+enum CpuType {
+    Chip8,
+    Schip,
+    XoChip,
+}
+
 struct CPU {
     memory: [u8; MEMORY_SIZE],
     v: [u8; 16],
@@ -42,6 +49,8 @@ struct CPU {
     stack: Vec<usize>,
     draw_flag: bool,
     key_pressed: Option<u8>,
+    key_down: Option<u8>,
+    cpu_type: CpuType,
 }
 
 #[derive(Debug)]
@@ -55,7 +64,7 @@ struct Instruction {
 }
 
 impl CPU {
-    fn initialize() -> Self {
+    fn initialize(cpu_type: CpuType) -> Self {
         let mut memory: [u8; MEMORY_SIZE] = [0; MEMORY_SIZE];
         memory[0..FONT_SET.len()].copy_from_slice(&FONT_SET);
         CPU {
@@ -69,6 +78,8 @@ impl CPU {
             sound_timer: 0,
             draw_flag: false,
             key_pressed: None,
+            key_down: None,
+            cpu_type,
         }
     }
 
@@ -216,14 +227,26 @@ impl CPU {
     }
 
     /// SHR Vx {, Vy}
-    fn e_8xy6(&mut self, x: u8, _y: u8) {
+    fn e_8xy6(&mut self, x: u8, y: u8) {
+        match self.cpu_type {
+            CpuType::Schip => {}
+            _ => {
+                self.v[x as usize] = self.v[y as usize];
+            }
+        }
         let flag_bit = self.v[x as usize] & 1;
         self.v[x as usize] >>= 1;
         self.v[0xF] = flag_bit;
     }
 
     /// SHL Vx {, Vy}
-    fn e_8xye(&mut self, x: u8, _y: u8) {
+    fn e_8xye(&mut self, x: u8, y: u8) {
+        match self.cpu_type {
+            CpuType::Schip => {}
+            _ => {
+                self.v[x as usize] = self.v[y as usize];
+            }
+        }
         let flag_bit = {
             if self.v[x as usize] & 0x80 == 0x80 {
                 1
@@ -242,10 +265,13 @@ impl CPU {
 
     /// JP V0, addr
     fn e_bnnn(&mut self, x: u8, nnn: u16) {
-        if MODERN {
-            self.pc = (nnn + self.v[x as usize] as u16) as usize;
-        } else {
-            self.pc = (nnn + self.v[0] as u16) as usize;
+        match self.cpu_type {
+            CpuType::Chip8 => {
+                self.pc = (nnn + self.v[0] as u16) as usize;
+            }
+            _ => {
+                self.pc = (nnn + self.v[x as usize] as u16) as usize;
+            }
         }
     }
 
@@ -257,16 +283,25 @@ impl CPU {
 
     /// DRW Vx, Vy, nibble
     fn e_dxyn(&mut self, x: u8, y: u8, n: u8) {
-        let x_coord = self.v[x as usize];
-        let y_coord = self.v[y as usize];
+        let x_coord = self.v[x as usize] % 64;
+        let y_coord = self.v[y as usize] % 32;
         self.v[0xF] = 0;
         for row in 0..n {
             let row_pixels = self.memory[self.i as usize + row as usize];
             for col in 0..8 {
                 // Current pixel is on
+                let mut curr_x = x_coord as usize + col as usize;
+                let mut curr_y = y_coord as usize + row as usize;
+                if curr_x > 63 || curr_y > 31 {
+                    // @TODO verify this
+                    if self.cpu_type == CpuType::XoChip {
+                        curr_x = curr_x % 64;
+                        curr_y = curr_y % 32;
+                    } else {
+                        continue;
+                    }
+                }
                 if row_pixels & (0x80 >> col) != 0 {
-                    let curr_x: usize = (x_coord as usize + col as usize) % 64;
-                    let curr_y: usize = (y_coord as usize + row as usize) % 32;
                     let i = curr_x + (64 * curr_y);
                     // Pixel at X,Y on screen is on
                     if self.gfx[i] == 1 {
@@ -283,7 +318,7 @@ impl CPU {
 
     /// SKP Vx
     fn e_ex9e(&mut self, x: u8) {
-        if let Some(key) = self.key_pressed {
+        if let Some(key) = self.key_down {
             if self.v[x as usize] == key {
                 self.pc += 2;
             }
@@ -292,7 +327,7 @@ impl CPU {
 
     /// SKNP Vx
     fn e_exa1(&mut self, x: u8) {
-        if let Some(key) = self.key_pressed {
+        if let Some(key) = self.key_down {
             if self.v[x as usize] != key {
                 self.pc += 2;
             }
@@ -433,30 +468,30 @@ impl CPU {
     }
 }
 
-fn keycode_to_hex(keycode: Keycode) -> Option<u8> {
-    match keycode {
-        Keycode::Num1 => Some(0x1),
-        Keycode::Num2 => Some(0x2),
-        Keycode::Num3 => Some(0x3),
-        Keycode::Num4 => Some(0xC),
-        Keycode::Q => Some(0x4),
-        Keycode::W => Some(0x5),
-        Keycode::E => Some(0x6),
-        Keycode::R => Some(0xD),
-        Keycode::A => Some(0x7),
-        Keycode::S => Some(0x8),
-        Keycode::D => Some(0x9),
-        Keycode::F => Some(0xE),
-        Keycode::Z => Some(0xA),
-        Keycode::X => Some(0x0),
-        Keycode::C => Some(0xB),
-        Keycode::V => Some(0xF),
+fn scancode_to_hex(scancode: Scancode) -> Option<u8> {
+    match scancode {
+        Scancode::Num1 => Some(0x1),
+        Scancode::Num2 => Some(0x2),
+        Scancode::Num3 => Some(0x3),
+        Scancode::Num4 => Some(0xC),
+        Scancode::Q => Some(0x4),
+        Scancode::W => Some(0x5),
+        Scancode::E => Some(0x6),
+        Scancode::R => Some(0xD),
+        Scancode::A => Some(0x7),
+        Scancode::S => Some(0x8),
+        Scancode::D => Some(0x9),
+        Scancode::F => Some(0xE),
+        Scancode::Z => Some(0xA),
+        Scancode::X => Some(0x0),
+        Scancode::C => Some(0xB),
+        Scancode::V => Some(0xF),
         _ => None,
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let mut chip8 = CPU::initialize();
+    let mut chip8 = CPU::initialize(CpuType::Chip8);
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         panic!("Must include ROM filepath as argument")
@@ -481,22 +516,28 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     canvas.present();
     let mut event_pump = sdl_context.event_pump().unwrap();
     'running: loop {
+        chip8.key_pressed = None;
+        chip8.key_down = None;
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'running,
-                Event::KeyDown { keycode, .. } => {
-                    let keycode = keycode.expect("Some key pressed");
-                    if let Some(key_hex) = keycode_to_hex(keycode) {
-                        if Some(key_hex) != chip8.key_pressed {
-                            println!("Pressed {:?}", keycode);
-                        }
-                        chip8.key_pressed = Some(key_hex);
+                Event::KeyDown { scancode, .. } => {
+                    println!("{:?}", event);
+                    let scancode = scancode.expect("Some key down");
+                    if let Some(key_hex) = scancode_to_hex(scancode) {
+                        chip8.key_down = Some(key_hex);
                     } else {
                         println!("Unknown key");
                     }
                 }
-                Event::KeyUp { .. } => {
-                    chip8.key_pressed = None;
+                Event::KeyUp { scancode, .. } => {
+                    println!("{:?}", event);
+                    let scancode = scancode.expect("Some key pressed");
+                    if let Some(key_hex) = scancode_to_hex(scancode) {
+                        chip8.key_pressed = Some(key_hex);
+                    } else {
+                        println!("Unknown key");
+                    }
                 }
                 _ => {}
             }
@@ -521,10 +562,14 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             canvas.present();
         }
 
-        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
+        match chip8.cpu_type {
+            CpuType::Chip8 => {
+                ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
+            },
+            _ => {}
+        }
     }
     Ok(())
 }
 
 const FPS: u32 = 60;
-const MODERN: bool = true;
