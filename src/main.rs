@@ -40,7 +40,6 @@ struct CPU {
     delay_timer: u8,
     sound_timer: u8,
     stack: Vec<usize>,
-    key: [u8; 16],
     draw_flag: bool,
     key_pressed: Option<u8>,
 }
@@ -68,7 +67,6 @@ impl CPU {
             memory,
             delay_timer: 0,
             sound_timer: 0,
-            key: [0; 16],
             draw_flag: false,
             key_pressed: None,
         }
@@ -169,16 +167,19 @@ impl CPU {
     /// OR Vx, Vy
     fn e_8xy1(&mut self, x: u8, y: u8) {
         self.v[x as usize] = self.v[x as usize] | self.v[y as usize];
+        self.v[0xF] = 0;
     }
 
     /// AND Vx, Vy
     fn e_8xy2(&mut self, x: u8, y: u8) {
         self.v[x as usize] = self.v[x as usize] & self.v[y as usize];
+        self.v[0xF] = 0;
     }
 
     /// XOR Vx, Vy
     fn e_8xy3(&mut self, x: u8, y: u8) {
         self.v[x as usize] = self.v[x as usize] ^ self.v[y as usize];
+        self.v[0xF] = 0;
     }
 
     /// ADD Vx, Vy
@@ -197,9 +198,9 @@ impl CPU {
         let (diff, overflowed) = self.v[x as usize].overflowing_sub(self.v[y as usize]);
         self.v[x as usize] = diff;
         if overflowed {
-            self.v[0xF] = 1;
-        } else {
             self.v[0xF] = 0;
+        } else {
+            self.v[0xF] = 1;
         }
     }
 
@@ -208,36 +209,30 @@ impl CPU {
         let (diff, overflowed) = self.v[y as usize].overflowing_sub(self.v[x as usize]);
         self.v[x as usize] = diff;
         if overflowed {
-            self.v[0xF] = 1;
-        } else {
             self.v[0xF] = 0;
+        } else {
+            self.v[0xF] = 1;
         }
     }
 
     /// SHR Vx {, Vy}
-    fn e_8xy6(&mut self, x: u8, y: u8) {
-        if MODERN {
-            self.v[x as usize] = self.v[y as usize];
-        }
-        if self.v[x as usize] & 1 == 1 {
-            self.v[0xF] = 1;
-        } else {
-            self.v[0xF] = 0;
-        }
+    fn e_8xy6(&mut self, x: u8, _y: u8) {
+        let flag_bit = self.v[x as usize] & 1;
         self.v[x as usize] >>= 1;
+        self.v[0xF] = flag_bit;
     }
 
     /// SHL Vx {, Vy}
-    fn e_8xye(&mut self, x: u8, y: u8) {
-        if MODERN {
-            self.v[x as usize] = self.v[y as usize];
-        }
-        if self.v[x as usize] & 0x80 == 0x80 {
-            self.v[0xF] = 1;
-        } else {
-            self.v[0xF] = 0;
-        }
+    fn e_8xye(&mut self, x: u8, _y: u8) {
+        let flag_bit = {
+            if self.v[x as usize] & 0x80 == 0x80 {
+                1
+            } else {
+                0
+            }
+        };
         self.v[x as usize] <<= 1;
+        self.v[0xF] = flag_bit;
     }
 
     /// LD I, addr
@@ -288,14 +283,20 @@ impl CPU {
 
     /// SKP Vx
     fn e_ex9e(&mut self, x: u8) {
-        if self.key[self.v[x as usize] as usize] != 0 {
-            self.pc += 2;
+        if let Some(key) = self.key_pressed {
+            if self.v[x as usize] == key {
+                self.pc += 2;
+            }
         }
     }
 
     /// SKNP Vx
     fn e_exa1(&mut self, x: u8) {
-        if self.key[self.v[x as usize] as usize] == 0 {
+        if let Some(key) = self.key_pressed {
+            if self.v[x as usize] != key {
+                self.pc += 2;
+            }
+        } else {
             self.pc += 2;
         }
     }
@@ -345,12 +346,14 @@ impl CPU {
     fn e_fx55(&mut self, x: u8) {
         self.memory[(self.i as usize)..=(self.i as usize + x as usize)]
             .copy_from_slice(&self.v[0..=x as usize]);
+        self.i += 1;
     }
 
     /// LD Vx, [I]
     fn e_fx65(&mut self, x: u8) {
         self.v[0..=x as usize]
             .copy_from_slice(&self.memory[(self.i as usize)..=(self.i as usize + x as usize)]);
+        self.i += 1;
     }
 
     fn e_unknown(&mut self, instruction: Instruction) {
