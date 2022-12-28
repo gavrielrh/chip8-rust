@@ -1,28 +1,16 @@
 extern crate sdl2;
 
-use std::fs;
-use std::env;
 use rand::prelude::*;
-use sdl2::rect::Point;
-use sdl2::pixels::Color;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+use sdl2::pixels::Color;
+use sdl2::rect::Point;
+use std::env;
+use std::fs;
 use std::time::Duration;
 
-struct CPU {
-    memory: [u8; 4096],
-    v: [u8; 16],
-    i: usize,
-    pc: usize,
-    gfx: [u8; 64 * 32],
-    delay_timer: u8,
-    sound_timer: u8,
-    stack: [u16; 16],
-    sp: usize,
-    key: [u8; 16],
-    draw_flag: bool,
-    key_pressed: bool
-}
+const MEMORY_SIZE: usize = 4096;
+const PROGRAM_START: usize = 512;
 
 const FONT_SET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -40,253 +28,396 @@ const FONT_SET: [u8; 80] = [
     0xF0, 0x80, 0x80, 0x80, 0xF0, // C
     0xE0, 0x90, 0x90, 0x90, 0xE0, // D
     0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
+
+struct CPU {
+    memory: [u8; MEMORY_SIZE],
+    v: [u8; 16],
+    i: u16,
+    pc: usize,
+    gfx: [u8; 64 * 32],
+    delay_timer: u8,
+    sound_timer: u8,
+    stack: Vec<usize>,
+    key: [u8; 16],
+    draw_flag: bool,
+    key_pressed: Option<u8>,
+}
+
+#[derive(Debug)]
+struct Instruction {
+    op: u8,
+    x: u8,
+    y: u8,
+    n: u8,
+    nn: u8,
+    nnn: u16,
+}
 
 impl CPU {
     fn initialize() -> Self {
-        let mut memory: [u8; 4096] = [0; 4096];
-        memory[0..80].copy_from_slice(&FONT_SET);
+        let mut memory: [u8; MEMORY_SIZE] = [0; MEMORY_SIZE];
+        memory[0..FONT_SET.len()].copy_from_slice(&FONT_SET);
         CPU {
             pc: 0x200,
             i: 0,
-            sp: 0,
             gfx: [0; 64 * 32],
-            stack: [0; 16],
+            stack: vec![],
             v: [0; 16],
             memory,
             delay_timer: 0,
             sound_timer: 0,
             key: [0; 16],
             draw_flag: false,
-            key_pressed: false
+            key_pressed: None,
         }
     }
 
     fn load_program(&mut self, program: &Vec<u8>) {
-        self.memory[512..(512 + program.len())].copy_from_slice(program);
+        self.memory[PROGRAM_START..(PROGRAM_START + program.len())].copy_from_slice(program);
     }
 
-    fn fetch(&self) -> u16 {
-        (self.memory[self.pc] as u16) << 8 | (self.memory[self.pc + 1] as u16)
-    }
-
-    fn emulate_cycle(&mut self) {
-        let instruction = self.fetch();
+    fn fetch(&mut self) -> u16 {
+        let instruction = (self.memory[self.pc] as u16) << 8 | (self.memory[self.pc + 1] as u16);
         self.pc += 2;
-        let op: u8 = (instruction >> 12) as u8;
-        let x: usize = ((instruction & 0x0F00) >> 8) as usize;
-        let y: usize = ((instruction & 0x00F0) >> 4) as usize;
-        let n: u8 = (instruction & 0x000F) as u8;
-        let nn: u8 = (instruction & 0x00FF) as u8;
-        let nnn: usize = (instruction & 0x0FFF) as usize;
+        instruction
+    }
 
-        match op {
-            0x0 => {
-                match nnn {
-                    0x0000 => {
-                        // Ignore
-                    },
-                    0x00E0 => {
-                        self.gfx = [0u8; 64 * 32];
-                        self.draw_flag = true;
-                    },
-                    0x00EE => {
-                        self.pc = self.stack[self.sp] as usize;
-                        self.sp -= 1;
-                    },
-                    _ => println!("Unknown opcode: {:?}", instruction)
-                }
-            },
-            0x1 => {
-                self.pc = nnn as usize;
-            },
-            0x2 => {
-                self.sp += 1;
-                self.stack[self.sp] = self.pc as u16;
-                self.pc = nnn as usize;
-            },
-            0x3 => {
-                if self.v[x as usize] == nn as u8 {
-                    self.pc += 2;
-                }
-            },
-            0x4 => {
-                if self.v[x as usize] != nn as u8 {
-                    self.pc += 2;
-                }
-            },
-            0x5 => {
-                match n {
-                    0 => {
-                        if self.v[x] == self.v[y] {
-                            self.pc += 2;
-                        }
-                    },
-                    _ => println!("Unknown opcode: {:?}", instruction)
-                }
-            },
-            0x6 => {
-                self.v[x] = nn as u8;
-            },
-            0x7 => {
-                self.v[x] = ((self.v[x] as usize + nn as usize) & 0xFF) as u8;
-            },
-            0x8 => {
-                match n {
-                    0x0 => {
-                        self.v[x] = self.v[y];
-                    },
-                    0x1 => {
-                        self.v[x] = self.v[x] | self.v[y];
-                    },
-                    0x2 => {
-                        self.v[x] = self.v[x] & self.v[y];
-                    },
-                    0x3 => {
-                        self.v[x] = self.v[x] ^ self.v[y];
-                    },
-                    0x4 => {
-                        // there is probably a way cleaner way of doing this
-                        let sum: u16 = self.v[x] as u16 + self.v[y] as u16;
-                        self.v[x] = (sum & 0xFF) as u8;
-                        if sum > 255 {
-                            self.v[0xF] = 1;
-                        } else {
-                            self.v[0xF] = 0;
-                        }
-                    },
-                    0x5 => {
-                        if self.v[x] > self.v[y] {
-                            self.v[0xF] = 1;
-                        } else {
-                            self.v[0xF] = 0;
-                        }
-                        self.v[x] = self.v[x] - (self.v[y] & self.v[x]);
-                    },
-                    0x6 => {
-                        if self.v[x] & 1 == 1 {
-                            self.v[0xF] = 1;
-                        } else {
-                            self.v[0xF] = 0;
-                        }
-                        self.v[x] >>= 2;
-                    },
-                    0x7 => {
-                        if self.v[y] > self.v[x] {
-                            self.v[0xF] = 1;
-                        } else {
-                            self.v[0xF] = 0;
-                        }
-                        self.v[x] = self.v[y] - (self.v[x] & self.v[y]);
-                    },
-                    0xE => {
-                        if self.v[x] & 0x80 == 0x80 {
-                            self.v[0xF] = 1;
-                        } else {
-                            self.v[0xF] = 0;
-                        }
-                        self.v[x] <<= 2;
-                    },
-                    _ => println!("Unknown opcode: {:?}", instruction)
-                }
-            },
-            0x9 => {
-                match n {
-                    0x0 => {
-                        if self.v[x] != self.v[y] {
-                            self.pc += 2;
-                        }
-                    },
-                    _ => println!("Unknown opcode: {:?}", instruction)
-                }
-            },
-            0xA => {
-                self.i = nnn;
-            },
-            0xB => {
-                self.pc = nnn + self.v[0] as usize;
-            },
-            0xC => {
-                let num: u8 = random();
-                self.v[x] = num & nn as u8;
-            },
-            0xD => {
-                let x_coord = self.v[x];
-                let y_coord = self.v[y];
-                self.v[0xF] = 0;
-                for row in 0..n {
-                    let row_pixels = self.memory[self.i + row as usize];
-                    for col in 0..8 {
-                        // Current pixel is on
-                        if row_pixels & (0x80 >> col) != 0 {
-                            let curr_x: usize = (x_coord as usize + col as usize) % 64;
-                            let curr_y: usize = (y_coord as usize + row as usize) % 32;
-                            let i = curr_x + (64 * curr_y);
-                            // Pixel at X,Y on screen is on
-                            if self.gfx[i] == 1 {
-                                // Collision (trying to draw on top of drawn pixel)
-                                self.v[0xF] = 1;
-                            }
-                            // Toggle the pixel on the screen
-                            self.gfx[i] ^= 1;
-                        }
+    fn decode(&self, bytes: u16) -> Instruction {
+        let op: u8 = (bytes >> 12) as u8;
+        let x: u8 = ((bytes & 0x0F00) >> 8) as u8;
+        let y: u8 = ((bytes & 0x00F0) >> 4) as u8;
+        let n: u8 = (bytes & 0x000F) as u8;
+        let nn: u8 = (bytes & 0x00FF) as u8;
+        let nnn: u16 = bytes & 0x0FFF;
+        Instruction {
+            op,
+            x,
+            y,
+            n,
+            nn,
+            nnn,
+        }
+    }
+
+    /// CLS
+    fn e_00e0(&mut self) {
+        self.gfx = [0u8; 64 * 32];
+        self.draw_flag = true;
+    }
+
+    /// JP addr
+    fn e_1nnn(&mut self, nnn: u16) {
+        self.pc = nnn as usize;
+    }
+
+    /// RET
+    fn e_00ee(&mut self) {
+        self.pc = self.stack.pop().expect("Value on stack");
+    }
+
+    /// CALL addr
+    fn e_2nnn(&mut self, nnn: u16) {
+        self.stack.push(self.pc);
+        self.pc = nnn as usize;
+    }
+
+    /// SE Vx, byte
+    fn e_3xnn(&mut self, x: u8, nn: u8) {
+        if self.v[x as usize] == nn {
+            self.pc += 2;
+        }
+    }
+
+    /// SNE Vx, byte
+    fn e_4xnn(&mut self, x: u8, nn: u8) {
+        if self.v[x as usize] != nn as u8 {
+            self.pc += 2;
+        }
+    }
+
+    /// SE Vx, Vy
+    fn e_5xy0(&mut self, x: u8, y: u8) {
+        if self.v[x as usize] == self.v[y as usize] {
+            self.pc += 2;
+        }
+    }
+
+    /// SNE Vx, Vy
+    fn e_9xy0(&mut self, x: u8, y: u8) {
+        if self.v[x as usize] != self.v[y as usize] {
+            self.pc += 2;
+        }
+    }
+
+    /// LD Vx, byte
+    fn e_6xnn(&mut self, x: u8, nn: u8) {
+        self.v[x as usize] = nn as u8;
+    }
+
+    /// ADD Vx, byte
+    fn e_7xnn(&mut self, x: u8, nn: u8) {
+        self.v[x as usize] = ((self.v[x as usize] as u16 + nn as u16) & 0xFF) as u8;
+    }
+
+    /// LD Vx, Vy
+    fn e_8xy0(&mut self, x: u8, y: u8) {
+        self.v[x as usize] = self.v[y as usize];
+    }
+
+    /// OR Vx, Vy
+    fn e_8xy1(&mut self, x: u8, y: u8) {
+        self.v[x as usize] = self.v[x as usize] | self.v[y as usize];
+    }
+
+    /// AND Vx, Vy
+    fn e_8xy2(&mut self, x: u8, y: u8) {
+        self.v[x as usize] = self.v[x as usize] & self.v[y as usize];
+    }
+
+    /// XOR Vx, Vy
+    fn e_8xy3(&mut self, x: u8, y: u8) {
+        self.v[x as usize] = self.v[x as usize] ^ self.v[y as usize];
+    }
+
+    /// ADD Vx, Vy
+    fn e_8xy4(&mut self, x: u8, y: u8) {
+        let (sum, overflowed) = self.v[x as usize].overflowing_add(self.v[y as usize]);
+        self.v[x as usize] = sum;
+        if overflowed {
+            self.v[0xF] = 1;
+        } else {
+            self.v[0xF] = 0;
+        }
+    }
+
+    /// SUB Vx, Vy
+    fn e_8xy5(&mut self, x: u8, y: u8) {
+        let (diff, overflowed) = self.v[x as usize].overflowing_sub(self.v[y as usize]);
+        self.v[x as usize] = diff;
+        if overflowed {
+            self.v[0xF] = 1;
+        } else {
+            self.v[0xF] = 0;
+        }
+    }
+
+    /// SUBN Vx, Vy
+    fn e_8xy7(&mut self, x: u8, y: u8) {
+        let (diff, overflowed) = self.v[y as usize].overflowing_sub(self.v[x as usize]);
+        self.v[x as usize] = diff;
+        if overflowed {
+            self.v[0xF] = 1;
+        } else {
+            self.v[0xF] = 0;
+        }
+    }
+
+    /// SHR Vx {, Vy}
+    fn e_8xy6(&mut self, x: u8, y: u8) {
+        if MODERN {
+            self.v[x as usize] = self.v[y as usize];
+        }
+        if self.v[x as usize] & 1 == 1 {
+            self.v[0xF] = 1;
+        } else {
+            self.v[0xF] = 0;
+        }
+        self.v[x as usize] >>= 1;
+    }
+
+    /// SHL Vx {, Vy}
+    fn e_8xye(&mut self, x: u8, y: u8) {
+        if MODERN {
+            self.v[x as usize] = self.v[y as usize];
+        }
+        if self.v[x as usize] & 0x80 == 0x80 {
+            self.v[0xF] = 1;
+        } else {
+            self.v[0xF] = 0;
+        }
+        self.v[x as usize] <<= 1;
+    }
+
+    /// LD I, addr
+    fn e_annn(&mut self, nnn: u16) {
+        self.i = nnn;
+    }
+
+    /// JP V0, addr
+    fn e_bnnn(&mut self, x: u8, nnn: u16) {
+        if MODERN {
+            self.pc = (nnn + self.v[x as usize] as u16) as usize;
+        } else {
+            self.pc = (nnn + self.v[0] as u16) as usize;
+        }
+    }
+
+    /// RND Vx, byte
+    fn e_cxnn(&mut self, x: u8, nn: u8) {
+        let num: u8 = random();
+        self.v[x as usize] = num & nn;
+    }
+
+    /// DRW Vx, Vy, nibble
+    fn e_dxyn(&mut self, x: u8, y: u8, n: u8) {
+        let x_coord = self.v[x as usize];
+        let y_coord = self.v[y as usize];
+        self.v[0xF] = 0;
+        for row in 0..n {
+            let row_pixels = self.memory[self.i as usize + row as usize];
+            for col in 0..8 {
+                // Current pixel is on
+                if row_pixels & (0x80 >> col) != 0 {
+                    let curr_x: usize = (x_coord as usize + col as usize) % 64;
+                    let curr_y: usize = (y_coord as usize + row as usize) % 32;
+                    let i = curr_x + (64 * curr_y);
+                    // Pixel at X,Y on screen is on
+                    if self.gfx[i] == 1 {
+                        // Collision (trying to draw on top of drawn pixel)
+                        self.v[0xF] = 1;
                     }
+                    // Toggle the pixel on the screen
+                    self.gfx[i] ^= 1;
                 }
-                self.draw_flag = true;
+            }
+        }
+        self.draw_flag = true;
+    }
+
+    /// SKP Vx
+    fn e_ex9e(&mut self, x: u8) {
+        if self.key[self.v[x as usize] as usize] != 0 {
+            self.pc += 2;
+        }
+    }
+
+    /// SKNP Vx
+    fn e_exa1(&mut self, x: u8) {
+        if self.key[self.v[x as usize] as usize] == 0 {
+            self.pc += 2;
+        }
+    }
+
+    /// LD Vx, DT
+    fn e_fx07(&mut self, x: u8) {
+        self.v[x as usize] = self.delay_timer;
+    }
+
+    /// LD DT, Vx
+    fn e_fx15(&mut self, x: u8) {
+        self.delay_timer = self.v[x as usize];
+    }
+
+    /// LD ST, Vx
+    fn e_fx18(&mut self, x: u8) {
+        self.sound_timer = self.v[x as usize];
+    }
+
+    /// ADD I, Vx
+    fn e_fx1e(&mut self, x: u8) {
+        self.i = self.i + self.v[x as usize] as u16;
+    }
+
+    /// LD Vx, K
+    fn e_fx0a(&mut self, x: u8) {
+        if let Some(key) = self.key_pressed {
+            self.v[x as usize] = key;
+        } else {
+            self.pc -= 2;
+        }
+    }
+
+    /// LD F, Vx
+    fn e_fx29(&mut self, x: u8) {
+        self.i = self.memory[self.v[x as usize] as usize] as u16;
+    }
+
+    /// LD B, Vx
+    fn e_fx33(&mut self, x: u8) {
+        self.memory[self.i as usize] = self.v[x as usize] / 100;
+        self.memory[self.i as usize + 1] = (self.v[x as usize] / 10) % 10;
+        self.memory[self.i as usize + 2] = (self.v[x as usize] % 100) % 10;
+    }
+
+    /// LD [I], Vx
+    fn e_fx55(&mut self, x: u8) {
+        self.memory[(self.i as usize)..=(self.i as usize + x as usize)]
+            .copy_from_slice(&self.v[0..=x as usize]);
+    }
+
+    /// LD Vx, [I]
+    fn e_fx65(&mut self, x: u8) {
+        self.v[0..=x as usize]
+            .copy_from_slice(&self.memory[(self.i as usize)..=(self.i as usize + x as usize)]);
+    }
+
+    fn e_unknown(&mut self, instruction: Instruction) {
+        println!("Unknown Instruction: {:?}", instruction);
+    }
+
+    fn execute(&mut self, instruction: Instruction) {
+        let op = instruction.op;
+        let x = instruction.x;
+        let y = instruction.y;
+        let n = instruction.n;
+        let nn = instruction.nn;
+        let nnn = instruction.nnn;
+        match op {
+            0x0 => match nnn {
+                0x0E0 => self.e_00e0(),
+                0x0EE => self.e_00ee(),
+                _ => self.e_unknown(instruction),
             },
-            0xE => {
-                match nn {
-                    0x9E => {
-                        if self.key[self.v[x] as usize] != 0 {
-                            self.pc += 2;
-                        }
-                    },
-                    0xA1 => {
-                        if self.key[self.v[x] as usize] == 0 {
-                            self.pc += 2;
-                        }
-                    },
-                    _ => println!("Unknown opcode: {:?}", instruction)
-                }
+            0x1 => self.e_1nnn(nnn),
+            0x2 => self.e_2nnn(nnn),
+            0x3 => self.e_3xnn(x, nn),
+            0x4 => self.e_4xnn(x, nn),
+            0x5 => match n {
+                0x0 => self.e_5xy0(x, y),
+                _ => self.e_unknown(instruction),
             },
-            0xF => {
-                match nn {
-                    0x07 => {
-                        self.v[x] = self.delay_timer;
-                    },
-                    0x0A => {
-                        if !self.key_pressed {
-                            self.pc -= 2;
-                        }
-                    },
-                    0x15 => {
-                        self.delay_timer = self.v[x];
-                    },
-                    0x18 => {
-                        self.sound_timer = self.v[x];
-                    },
-                    0x1E => {
-                        self.i = self.i + self.v[x] as usize;
-                    },
-                    0x29 => {
-                        self.i = self.memory[self.v[x] as usize] as usize;
-                    },
-                    0x33 => {
-                        self.memory[self.i] = self.v[x] / 100;
-                        self.memory[self.i + 1] = (self.v[x] / 10) % 10;
-                        self.memory[self.i + 1] = (self.v[x] % 100) % 10;
-                    },
-                    0x55 => {
-                        self.memory[(self.i)..(self.i + 16)].copy_from_slice(&self.v);
-                    },
-                    0x65 => {
-                        self.v.copy_from_slice(&self.memory[(self.i)..(self.i + 16)]);
-                    },
-                    _ => println!("Unknown opcode: {:?}", instruction)
-                }
+            0x6 => self.e_6xnn(x, nn),
+            0x7 => self.e_7xnn(x, nn),
+            0x8 => match n {
+                0x0 => self.e_8xy0(x, y),
+                0x1 => self.e_8xy1(x, y),
+                0x2 => self.e_8xy2(x, y),
+                0x3 => self.e_8xy3(x, y),
+                0x4 => self.e_8xy4(x, y),
+                0x5 => self.e_8xy5(x, y),
+                0x6 => self.e_8xy6(x, y),
+                0x7 => self.e_8xy7(x, y),
+                0xE => self.e_8xye(x, y),
+                _ => self.e_unknown(instruction),
             },
-            _ => println!("Unknown opcode: {:?}", instruction)
+            0x9 => match n {
+                0x0 => self.e_9xy0(x, y),
+                _ => self.e_unknown(instruction),
+            },
+            0xA => self.e_annn(nnn),
+            0xB => self.e_bnnn(x, nnn),
+            0xC => self.e_cxnn(x, nn),
+            0xD => self.e_dxyn(x, y, n),
+            0xE => match nn {
+                0x9E => self.e_ex9e(x),
+                0xA1 => self.e_exa1(x),
+                _ => self.e_unknown(instruction),
+            },
+            0xF => match nn {
+                0x07 => self.e_fx07(x),
+                0x0A => self.e_fx0a(x),
+                0x15 => self.e_fx15(x),
+                0x18 => self.e_fx18(x),
+                0x1E => self.e_fx1e(x),
+                0x29 => self.e_fx29(x),
+                0x33 => self.e_fx33(x),
+                0x55 => self.e_fx55(x),
+                0x65 => self.e_fx65(x),
+                _ => self.e_unknown(instruction),
+            },
+            _ => self.e_unknown(instruction),
         }
 
         if self.delay_timer > 0 {
@@ -296,6 +427,28 @@ impl CPU {
             println!("BEEP!");
             self.sound_timer -= 1;
         }
+    }
+}
+
+fn keycode_to_hex(keycode: Keycode) -> Option<u8> {
+    match keycode {
+        Keycode::Num1 => Some(0x1),
+        Keycode::Num2 => Some(0x2),
+        Keycode::Num3 => Some(0x3),
+        Keycode::Num4 => Some(0xC),
+        Keycode::Q => Some(0x4),
+        Keycode::W => Some(0x5),
+        Keycode::E => Some(0x6),
+        Keycode::R => Some(0xD),
+        Keycode::A => Some(0x7),
+        Keycode::S => Some(0x8),
+        Keycode::D => Some(0x9),
+        Keycode::F => Some(0xE),
+        Keycode::Z => Some(0xA),
+        Keycode::X => Some(0x0),
+        Keycode::C => Some(0xB),
+        Keycode::V => Some(0xF),
+        _ => None,
     }
 }
 
@@ -312,11 +465,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
 
-    let window = video_subsystem.window("CHIP-8", 640, 320)
+    let window = video_subsystem
+        .window("CHIP-8", 640, 320)
         .position_centered()
         .build()
         .unwrap();
-    
+
     let mut canvas = window.into_canvas().build().unwrap();
     canvas.set_scale(10.0, 10.0)?;
     canvas.set_draw_color(Color::RGB(0, 0, 0));
@@ -326,41 +480,27 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     'running: loop {
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit {..} => {
-                    break 'running
-                },
+                Event::Quit { .. } => break 'running,
                 Event::KeyDown { keycode, .. } => {
-                    chip8.key_pressed = true;
-                    println!("Pressed {:?}", keycode);
-                    let chip8_key = match keycode {
-                        Some(Keycode::Num1) => Some(0x1),
-                        Some(Keycode::Num2) => Some(0x2),
-                        Some(Keycode::Num3) => Some(0x3),
-                        Some(Keycode::Num4) => Some(0xC),
-                        Some(Keycode::Q) => Some(0x4),
-                        Some(Keycode::W) => Some(0x5),
-                        Some(Keycode::E) => Some(0x6),
-                        Some(Keycode::R) => Some(0xD),
-                        Some(Keycode::A) => Some(0x7),
-                        Some(Keycode::S) => Some(0x8),
-                        Some(Keycode::D) => Some(0x9),
-                        Some(Keycode::F) => Some(0xE),
-                        Some(Keycode::Z) => Some(0xA),
-                        Some(Keycode::X) => Some(0x0),
-                        Some(Keycode::C) => Some(0xB),
-                        Some(Keycode::V) => Some(0xF),
-                        _ => None
-                    };
-                    if let Some(ckey) = chip8_key {
-                        chip8.key[ckey] = 1;
+                    let keycode = keycode.expect("Some key pressed");
+                    if let Some(key_hex) = keycode_to_hex(keycode) {
+                        if Some(key_hex) != chip8.key_pressed {
+                            println!("Pressed {:?}", keycode);
+                        }
+                        chip8.key_pressed = Some(key_hex);
                     } else {
-                        println!("Unknown Keycode: {:?}", keycode);
+                        println!("Unknown key");
                     }
-                },
+                }
+                Event::KeyUp { .. } => {
+                    chip8.key_pressed = None;
+                }
                 _ => {}
             }
         }
-        chip8.emulate_cycle();
+        let bytes = chip8.fetch();
+        let instruction = chip8.decode(bytes);
+        chip8.execute(instruction);
 
         if chip8.draw_flag {
             canvas.set_draw_color(Color::RGB(0, 0, 0));
@@ -378,9 +518,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             canvas.present();
         }
 
-        chip8.key = [0u8; 16];
-        chip8.key_pressed = false;
-        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
     }
     Ok(())
 }
+
+const FPS: u32 = 60;
+const MODERN: bool = true;
