@@ -8,6 +8,7 @@ use sdl2::rect::Point;
 use std::env;
 use std::fs;
 use std::time::Duration;
+use std::time::Instant;
 
 const MEMORY_SIZE: usize = 4096;
 const PROGRAM_START: usize = 512;
@@ -51,6 +52,7 @@ struct CPU {
     key_pressed: Option<u8>,
     key_down: Option<u8>,
     cpu_type: CpuType,
+    timer_counter: Instant
 }
 
 #[derive(Debug)]
@@ -80,6 +82,7 @@ impl CPU {
             key_pressed: None,
             key_down: None,
             cpu_type,
+            timer_counter: Instant::now(),
         }
     }
 
@@ -458,12 +461,15 @@ impl CPU {
             _ => self.e_unknown(instruction),
         }
 
-        if self.delay_timer > 0 {
-            self.delay_timer -= 1;
-        }
-        if self.sound_timer > 0 {
-            println!("BEEP!");
-            self.sound_timer -= 1;
+        if self.timer_counter.elapsed().as_millis() >= 60 {
+            if self.delay_timer > 0 {
+                self.delay_timer -= 1;
+            }
+            if self.sound_timer > 0 {
+                println!("BEEP!");
+                self.sound_timer -= 1;
+            }
+            self.timer_counter = Instant::now();
         }
     }
 }
@@ -517,12 +523,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let mut event_pump = sdl_context.event_pump().unwrap();
     'running: loop {
         chip8.key_pressed = None;
-        chip8.key_down = None;
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::KeyDown { scancode, .. } => {
-                    println!("{:?}", event);
                     let scancode = scancode.expect("Some key down");
                     if let Some(key_hex) = scancode_to_hex(scancode) {
                         chip8.key_down = Some(key_hex);
@@ -531,13 +535,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
                     }
                 }
                 Event::KeyUp { scancode, .. } => {
-                    println!("{:?}", event);
                     let scancode = scancode.expect("Some key pressed");
                     if let Some(key_hex) = scancode_to_hex(scancode) {
                         chip8.key_pressed = Some(key_hex);
                     } else {
                         println!("Unknown key");
                     }
+                    chip8.key_down = None;
                 }
                 _ => {}
             }
@@ -564,7 +568,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 
         match chip8.cpu_type {
             CpuType::Chip8 => {
-                ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / FPS));
+                ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / INSTRUCTIONS_PER_SECOND));
             },
             _ => {}
         }
@@ -572,4 +576,4 @@ fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     Ok(())
 }
 
-const FPS: u32 = 60;
+const INSTRUCTIONS_PER_SECOND: u32 = 700;
